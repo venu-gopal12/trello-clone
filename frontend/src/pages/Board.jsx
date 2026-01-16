@@ -305,7 +305,9 @@ const Board = () => {
             className="flex-1 flex flex-col relative overflow-hidden"
             style={{ 
                 backgroundColor: board.background_color || '#0079bf',
-                backgroundImage: board.background_image ? `url(${board.background_image})` : 'none',
+                backgroundImage: board.background_image 
+                    ? (board.background_image.includes('gradient') ? board.background_image : `url(${board.background_image})`)
+                    : 'none',
                 backgroundSize: 'cover',
                 backgroundPosition: 'center'
             }}

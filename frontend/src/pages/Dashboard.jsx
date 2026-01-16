@@ -44,7 +44,19 @@ const Dashboard = () => {
       <h2 style={styles.header}>Your Boards</h2>
       <div style={styles.grid}>
         {boards.map(board => (
-          <Link key={board.id} to={`/board/${board.id}`} style={{...styles.card, backgroundColor: board.background_color || '#0079bf'}}>
+          <Link 
+            key={board.id} 
+            to={`/board/${board.id}`} 
+            style={{
+                ...styles.card, 
+                backgroundColor: board.background_color || '#0079bf',
+                backgroundImage: board.background_image 
+                    ? (board.background_image.includes('gradient') ? board.background_image : `url(${board.background_image})`)
+                    : 'none',
+                backgroundSize: 'cover',
+                backgroundPosition: 'center'
+            }}
+          >
             <h3 style={styles.title}>{board.title}</h3>
           </Link>
         ))}
