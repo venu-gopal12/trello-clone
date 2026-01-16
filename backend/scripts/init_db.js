@@ -1,57 +1,27 @@
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
+require('dotenv').config();
 
-const dbConfig = {
-  user: 'postgres',
-  host: 'localhost',
-  password: 'Venu@gopal123',
-  port: 5432,
-};
-
-const DB_NAME = 'trello_clone';
-
-async function createDatabase() {
-  console.log('Connecting to postgres database to check existence...');
-  const client = new Client({
-    ...dbConfig,
-    database: 'postgres',
-  });
-
-  try {
-    await client.connect();
-    console.log('Connected to postgres database.');
-
-    const checkDbQuery = `SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'`;
-    const res = await client.query(checkDbQuery);
-
-    if (res.rowCount === 0) {
-      console.log(`Database ${DB_NAME} not found. Creating...`);
-      await client.query(`CREATE DATABASE "${DB_NAME}"`);
-      console.log(`Database ${DB_NAME} created.`);
-    } else {
-      console.log(`Database ${DB_NAME} already exists.`);
+const clientConfig = process.env.DATABASE_URL
+  ? {
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
     }
-  } catch (err) {
-    console.error('Error during database check/creation:', err);
-    throw err;
-  } finally {
-    await client.end();
-  }
-}
+  : {
+      user: process.env.DB_USER || 'postgres',
+      host: process.env.DB_HOST || 'localhost',
+      password: process.env.DB_PASSWORD || 'postgres',
+      port: process.env.DB_PORT || 5432,
+      database: process.env.DB_NAME || 'trello_clone'
+    };
 
 async function runSchema() {
+  const client = new Client(clientConfig);
+
   try {
-      await createDatabase();
-
-      console.log(`Connecting to ${DB_NAME} to apply schema...`);
-      const client = new Client({
-        ...dbConfig,
-        database: DB_NAME,
-      });
-
       await client.connect();
-      console.log(`Connected to ${DB_NAME}.`);
+      console.log('Connected to database.');
       
       const schemaPath = path.join(__dirname, '../schema.sql');
       const schemaSql = fs.readFileSync(schemaPath, 'utf8');

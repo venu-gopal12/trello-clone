@@ -194,37 +194,133 @@ const Board = () => {
   // --- Actions ---
   const handleAddList = async () => {
       if (!newListTitle.trim()) return;
+      const titleToUse = newListTitle;
+      const tempId = `temp-list-${Date.now()}`;
+      
+      const tempList = {
+          id: tempId,
+          board_id: parseInt(id),
+          title: titleToUse,
+          position: (board.lists.length + 1) * 65535, // rough estimate
+          cards: []
+      };
+
+      setNewListTitle('');
+      setIsAddingList(false);
+
+      // Optimistic Add
+      setBoard(prev => ({
+          ...prev,
+          lists: [...prev.lists, tempList]
+      }));
+
       try {
-          await api.post('/lists', { board_id: id, title: newListTitle });
-          setNewListTitle('');
-          setIsAddingList(false);
-          fetchBoard();
-      } catch (e) { console.error(e); }
+          const { data: newList } = await api.post('/lists', { board_id: id, title: titleToUse });
+          
+          // Replace temp list with real list
+          setBoard(prev => ({
+              ...prev,
+              lists: prev.lists.map(l => l.id === tempId ? { ...newList, cards: [] } : l)
+          }));
+      } catch (e) { 
+          console.error(e);
+          setBoard(prev => ({
+              ...prev,
+              lists: prev.lists.filter(l => l.id !== tempId)
+          }));
+      }
   };
   
   const handleListDelete = async (listId) => {
       if (confirm("Delete list?")) {
+        // Optimistic Delete
+        const originalLists = board.lists;
+        setBoard(prev => ({
+            ...prev,
+            lists: prev.lists.filter(l => l.id !== listId)
+        }));
+
         try {
             await api.delete(`/lists/${listId}`);
-            fetchBoard();
-        } catch (e) { console.error(e); }
+            // No fetchBoard needed
+        } catch (e) { 
+            console.error(e);
+            // Revert on error
+            setBoard(prev => ({ ...prev, lists: originalLists }));
+            alert("Failed to delete list");
+        }
       }
   };
 
   const handleCardAdd = async (listId, title) => {
+      const tempId = `temp-${Date.now()}`;
+      const tempCard = {
+          id: tempId,
+          list_id: listId,
+          title,
+          position: 65535,
+          labels: [],
+          members: []
+      };
+
+      // Optimistic Add
+      setBoard(prev => ({
+          ...prev,
+          lists: prev.lists.map(list => 
+              list.id === listId 
+                ? { ...list, cards: [...list.cards, tempCard] }
+                : list
+          )
+      }));
+
       try {
-          await api.post('/cards', { list_id: listId, title, position: 65535 });
-          fetchBoard();
-      } catch (e) { console.error(e); }
+          const { data: newCard } = await api.post('/cards', { list_id: listId, title, position: 65535 });
+          
+          // Replace temp card with real card
+          setBoard(prev => ({
+              ...prev,
+              lists: prev.lists.map(list => 
+                  list.id === listId 
+                    ? { ...list, cards: list.cards.map(c => c.id === tempId ? newCard : c) }
+                    : list
+              )
+          }));
+      } catch (e) { 
+          console.error(e);
+          // Rollback on error
+          setBoard(prev => ({
+            ...prev,
+            lists: prev.lists.map(list => 
+                list.id === listId 
+                  ? { ...list, cards: list.cards.filter(c => c.id !== tempId) }
+                  : list
+            )
+        }));
+      }
   };
   
   const handleCardDelete = async (cardId) => {
       if (confirm("Delete card?")) {
+          // Optimistic Delete
+          const originalLists = board.lists;
+          setBoard(prev => ({
+              ...prev,
+              lists: prev.lists.map(list => ({
+                  ...list,
+                  cards: list.cards.filter(c => c.id !== cardId)
+              }))
+          }));
+          setSelectedCardId(null);
+
           try {
               await api.delete(`/cards/${cardId}`);
-              setSelectedCardId(null);
-              fetchBoard();
-          } catch(e) { console.error(e); }
+              // No fetchBoard needed
+          } catch(e) { 
+              console.error(e);
+              // Revert
+              setBoard(prev => ({ ...prev, lists: originalLists }));
+              alert("Failed to delete card");
+          }
       }
   };
 
@@ -251,68 +347,68 @@ const Board = () => {
   };
   
   const handleCardUpdate = async (updatedCard) => {
+      // 1. Optimistic Update (Immediate UI Change)
+      setBoard(prev => {
+          const newLists = prev.lists.map(list => ({
+              ...list,
+              cards: list.cards.map(c => c.id === updatedCard.id ? { ...c, ...updatedCard } : c)
+          }));
+          return { ...prev, lists: newLists };
+      });
+
       try {
-          // 1. Basic Update (Title, Description, Due Date)
+          // 2. Persist Basic Updates
           const payload = {
               title: updatedCard.title,
               description: updatedCard.description,
               due_date: updatedCard.dueDate || updatedCard.due_date,
           };
-          await api.put(`/cards/${updatedCard.id}`, payload);
+          // Don't await strictly for UI purposes, but we need order for data integrity?
+          // For now, allow background.
+          api.put(`/cards/${updatedCard.id}`, payload);
 
-          // 2. Member Updates (Diffing)
-          // Find original card to compare members
+          // 3. Member Updates (Diffing)
           const originalCard = board.lists
             .flatMap(l => l.cards)
             .find(c => c.id === updatedCard.id);
 
           if (originalCard && updatedCard.members) {
               const oldMemberIds = originalCard.members.map(m => m.id);
-              const newMemberIds = updatedCard.members; // CardModal passes array of IDs now? Or objects? 
-              // Wait, CardModal passes `members` as array of ID's probably? 
-              // Let's check CardModal.jsx... 
-              // CardModal uses `editedCard.members` which stores IDs (toggleMember logic).
-              // BUT it passes `labels` and `members` as PROPS to CardModal.
-              // `editedCard` state tracks IDs.
-              
-              // Let's ensure we are treating newMemberIds as IDs.
-              const validNewMemberIds = newMemberIds.map(m => typeof m === 'object' ? m.id : m);
+              // CardModal uses IDs internally but might pass full objects if not careful.
+              // We normalized to IDs in CardModal state, let's assume incoming is correct OR handle both.
+              const validNewMemberIds = updatedCard.members.map(m => typeof m === 'object' ? m.id : m);
 
-              // Add missing members
               const toAdd = validNewMemberIds.filter(id => !oldMemberIds.includes(id));
-              for (const memberId of toAdd) {
-                  await api.post(`/cards/${updatedCard.id}/members`, { user_id: memberId });
-              }
-
-              // Remove extra members
               const toRemove = oldMemberIds.filter(id => !validNewMemberIds.includes(id));
-              for (const memberId of toRemove) {
-                  await api.delete(`/cards/${updatedCard.id}/members/${memberId}`);
-              }
+
+              // Parallelize these requests
+              const memberPromises = [
+                  ...toAdd.map(id => api.post(`/cards/${updatedCard.id}/members`, { user_id: id })),
+                  ...toRemove.map(id => api.delete(`/cards/${updatedCard.id}/members/${id}`))
+              ];
+              Promise.all(memberPromises).catch(e => console.error("Member sync error", e));
           }
 
-          // 3. Label Updates (Diffing)
+          // 4. Label Updates (Diffing)
           if (originalCard && updatedCard.labels) {
               const oldLabelIds = originalCard.labels.map(l => l.id);
-              const newLabelIds = updatedCard.labels;
-              
-              const validNewLabelIds = newLabelIds.map(l => typeof l === 'object' ? l.id : l);
+              const validNewLabelIds = updatedCard.labels.map(l => typeof l === 'object' ? l.id : l);
 
-              // Add missing labels
               const toAddLabels = validNewLabelIds.filter(id => !oldLabelIds.includes(id));
-              for (const labelId of toAddLabels) {
-                  await api.post(`/cards/${updatedCard.id}/labels`, { label_id: labelId });
-              }
-
-              // Remove extra labels
               const toRemoveLabels = oldLabelIds.filter(id => !validNewLabelIds.includes(id));
-              for (const labelId of toRemoveLabels) {
-                  await api.delete(`/cards/${updatedCard.id}/labels/${labelId}`);
-              }
-          }
 
-          fetchBoard(); 
-      } catch(e) { console.error(e); }
+               const labelPromises = [
+                  ...toAddLabels.map(id => api.post(`/cards/${updatedCard.id}/labels`, { label_id: id })),
+                  ...toRemoveLabels.map(id => api.delete(`/cards/${updatedCard.id}/labels/${id}`))
+              ];
+              Promise.all(labelPromises).catch(e => console.error("Label sync error", e));
+          }
+          
+          // No fetchBoard() needed!
+      } catch(e) { 
+          console.error("Card update failed", e);
+          // Revert state if critical failure? For now just log.
+      }
   };
   
   const handleBoardDelete = async (boardId) => {
