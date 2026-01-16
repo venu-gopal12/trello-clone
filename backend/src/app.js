@@ -15,7 +15,9 @@ const checklistRoutes = require('./routes/checklistRoutes');
 app.use('/api/boards', boardRoutes);
 app.use('/api/lists', listRoutes);
 app.use('/api/cards', cardRoutes);
+app.use('/api/cards', cardRoutes);
 app.use('/api/checklists', checklistRoutes);
+app.use('/api/users', require('./routes/userRoutes'));
 
 // Health Check
 app.get('/health', async (req, res) => {

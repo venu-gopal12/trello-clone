@@ -63,6 +63,20 @@ const Board = () => {
       }
   };
 
+  const [allMembers, setAllMembers] = useState([]);
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
+  const fetchUsers = async () => {
+      try {
+          const { data } = await api.get('/users');
+          setAllMembers(data);
+      } catch (e) {
+          console.error("Failed to fetch users", e);
+      }
+  };
+
   // --- Filtering Logic ---
   const filterCards = (cards) => {
       if (!cards) return [];
@@ -238,20 +252,65 @@ const Board = () => {
   
   const handleCardUpdate = async (updatedCard) => {
       try {
-          // Map back to snake_case for API if needed, but simplistic now
-          // Assuming API handles partials or we map.
-          // The CardModal passes a clean object usually.
-          // Let's manually map crucial fields if inconsistent.
+          // 1. Basic Update (Title, Description, Due Date)
           const payload = {
               title: updatedCard.title,
               description: updatedCard.description,
               due_date: updatedCard.dueDate || updatedCard.due_date,
-              // labels/members usually separate endpoints or complex payload
-              // For now assume logic exists or this is simple update
           };
           await api.put(`/cards/${updatedCard.id}`, payload);
-          // For checklist/labels/members, the modal might handle them individually 
-          // but here we just refresh board to be safe.
+
+          // 2. Member Updates (Diffing)
+          // Find original card to compare members
+          const originalCard = board.lists
+            .flatMap(l => l.cards)
+            .find(c => c.id === updatedCard.id);
+
+          if (originalCard && updatedCard.members) {
+              const oldMemberIds = originalCard.members.map(m => m.id);
+              const newMemberIds = updatedCard.members; // CardModal passes array of IDs now? Or objects? 
+              // Wait, CardModal passes `members` as array of ID's probably? 
+              // Let's check CardModal.jsx... 
+              // CardModal uses `editedCard.members` which stores IDs (toggleMember logic).
+              // BUT it passes `labels` and `members` as PROPS to CardModal.
+              // `editedCard` state tracks IDs.
+              
+              // Let's ensure we are treating newMemberIds as IDs.
+              const validNewMemberIds = newMemberIds.map(m => typeof m === 'object' ? m.id : m);
+
+              // Add missing members
+              const toAdd = validNewMemberIds.filter(id => !oldMemberIds.includes(id));
+              for (const memberId of toAdd) {
+                  await api.post(`/cards/${updatedCard.id}/members`, { user_id: memberId });
+              }
+
+              // Remove extra members
+              const toRemove = oldMemberIds.filter(id => !validNewMemberIds.includes(id));
+              for (const memberId of toRemove) {
+                  await api.delete(`/cards/${updatedCard.id}/members/${memberId}`);
+              }
+          }
+
+          // 3. Label Updates (Diffing)
+          if (originalCard && updatedCard.labels) {
+              const oldLabelIds = originalCard.labels.map(l => l.id);
+              const newLabelIds = updatedCard.labels;
+              
+              const validNewLabelIds = newLabelIds.map(l => typeof l === 'object' ? l.id : l);
+
+              // Add missing labels
+              const toAddLabels = validNewLabelIds.filter(id => !oldLabelIds.includes(id));
+              for (const labelId of toAddLabels) {
+                  await api.post(`/cards/${updatedCard.id}/labels`, { label_id: labelId });
+              }
+
+              // Remove extra labels
+              const toRemoveLabels = oldLabelIds.filter(id => !validNewLabelIds.includes(id));
+              for (const labelId of toRemoveLabels) {
+                  await api.delete(`/cards/${updatedCard.id}/labels/${labelId}`);
+              }
+          }
+
           fetchBoard(); 
       } catch(e) { console.error(e); }
   };
@@ -297,7 +356,7 @@ const Board = () => {
             filters={filters}
             onFilterChange={setFilters}
             labels={board.labels || []}
-            members={[{id: 1, name: 'User 1', avatar: 'U', color: '#ccc'}]} // Placeholder
+            members={allMembers}
         />
 
         {/* Board Canvas */}
@@ -362,7 +421,7 @@ const Board = () => {
                                     onCardDelete={handleCardDelete}
                                     isDragDisabled={false} // filter logic handled in map
                                     labels={board.labels || []}
-                                    members={[{id: 1, name: 'User 1', avatar: 'U', color: '#ccc'}]} // Placeholder
+                                    members={allMembers}
                                 />
                             ))}
                             {provided.placeholder}
@@ -405,7 +464,7 @@ const Board = () => {
           <CardModal 
              card={selectedCard}
              labels={board.labels || []}
-             members={[{id: 1, name: 'User 1', avatar: 'U', color: '#ccc'}]}
+             members={allMembers}
              onClose={() => setSelectedCardId(null)}
              onUpdate={handleCardUpdate}
           />

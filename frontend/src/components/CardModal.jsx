@@ -11,7 +11,12 @@ import { Calendar } from './ui/calendar';
 import { format } from 'date-fns';
 
 const CardModal = ({ card, labels, members, onClose, onUpdate }) => {
-  const [editedCard, setEditedCard] = useState({ ...card });
+  const [editedCard, setEditedCard] = useState({ 
+    ...card, 
+    // Ensure we work with IDs internally for easy toggling
+    members: card.members?.map(m => typeof m === 'object' ? m.id : m) || [],
+    labels: card.labels?.map(l => typeof l === 'object' ? l.id : l) || []
+  });
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [isEditingDescription, setIsEditingDescription] = useState(false);
   const [newChecklistItem, setNewChecklistItem] = useState('');
