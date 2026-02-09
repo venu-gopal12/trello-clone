@@ -20,4 +20,7 @@ router.delete('/:id', boardController.deleteBoard);
 // GET /api/boards/:id/activity - Get board activity log
 router.get('/:id/activity', boardController.getActivity);
 
+// POST /api/boards/:id/star - Toggle star
+router.post('/:id/star', boardController.toggleStar);
+
 module.exports = router;

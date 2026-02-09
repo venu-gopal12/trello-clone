@@ -61,6 +61,8 @@ class CardService {
 
     fields.push(`updated_at = NOW()`);
     
+    console.log('Updating Card:', id, 'Updates:', updates, 'Fields:', fields);
+
     if (fields.length === 1) return null;
 
     values.push(id);
@@ -107,26 +109,64 @@ class CardService {
   }
 
   async deleteCard(id, userId = 1) {
-    // Get card details before delete to know board_id
-    const cardQuery = `
-        SELECT c.*, l.board_id 
-        FROM cards c 
-        JOIN lists l ON c.list_id = l.id 
-        WHERE c.id = $1
-    `;
-    const checkRes = await db.query(cardQuery, [id]);
-    const cardToDelete = checkRes.rows[0];
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
 
-    const query = `DELETE FROM cards WHERE id = $1 RETURNING *`;
-    const { rows } = await db.query(query, [id]);
-    
-    if (cardToDelete) {
-        try {
-            await auditService.logAction(cardToDelete.board_id, userId, 'card', id, 'delete', { title: cardToDelete.title });
-        } catch (e) { console.error('Audit Log Error', e); }
+        // Get card details before delete to know board_id
+        const cardQuery = `
+            SELECT c.*, l.board_id 
+            FROM cards c 
+            JOIN lists l ON c.list_id = l.id 
+            WHERE c.id = $1
+        `;
+        const checkRes = await client.query(cardQuery, [id]);
+        const cardToDelete = checkRes.rows[0];
+
+        // Manual Cascade Delete (Safety fallback if DB cascade missing)
+        await client.query('DELETE FROM card_labels WHERE card_id = $1', [id]);
+        await client.query('DELETE FROM card_members WHERE card_id = $1', [id]);
+        
+        // Checklists require 2-step (items then lists, or cascade if confident)
+        // Deleting checklists should cascade to items if schema is right, but being explicit:
+        // We'll trust the DB cascade for checklists->items to be simple, 
+        // or just delete checklists which usually cascades. 
+        // If strict manual:
+        const clRes = await client.query('SELECT id FROM checklists WHERE card_id = $1', [id]);
+        const clIds = clRes.rows.map(r => r.id);
+        if (clIds.length > 0) {
+            await client.query('DELETE FROM checklist_items WHERE checklist_id = ANY($1::int[])', [clIds]);
+            await client.query('DELETE FROM checklists WHERE card_id = $1', [id]);
+        }
+
+        const query = `DELETE FROM cards WHERE id = $1 RETURNING *`;
+        const { rows } = await client.query(query, [id]);
+        
+        if (cardToDelete) {
+            try {
+                // We don't await audit log here to avoid transaction block or just do it inside?
+                // Audit service uses its own pool usually? 
+                // Let's just log it *after* commit or inside. 
+                // Since audit uses db.query (pool), it's separate connection or same pool. 
+                // It's safer to do it after COMMIT or inside if we pass client.
+                // For now, let's keep it separate/after to assume success.
+            } catch (e) { console.error('Audit Log Error', e); }
+        }
+
+        await client.query('COMMIT');
+        
+        // Log after commit
+        if (cardToDelete) {
+             auditService.logAction(cardToDelete.board_id, userId, 'card', id, 'delete', { title: cardToDelete.title }).catch(console.error);
+        }
+
+        return rows[0];
+    } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+    } finally {
+        client.release();
     }
-
-    return rows[0];
   }
 
   // --- DETAILS FEATURES ---
@@ -186,34 +226,170 @@ class CardService {
     };
   }
 
-  async addLabel(cardId, labelId) {
+  async addLabel(cardId, labelId, userId = 1) {
     const query = `
       INSERT INTO card_labels (card_id, label_id) VALUES ($1, $2)
       ON CONFLICT DO NOTHING RETURNING *
     `;
     const { rows } = await db.query(query, [cardId, labelId]);
+    
+    // Log Activity
+    try {
+        const ctxQuery = `
+            SELECT c.title, l.board_id, lb.name as label_name, lb.color 
+            FROM cards c 
+            JOIN lists l ON c.list_id = l.id 
+            JOIN labels lb ON lb.id = $2 
+            WHERE c.id = $1
+        `;
+        const ctxRes = await db.query(ctxQuery, [cardId, labelId]);
+        if (ctxRes.rows.length > 0) {
+            const { title, board_id, label_name, color } = ctxRes.rows[0];
+            await auditService.logAction(board_id, userId, 'card', cardId, 'add_label', { 
+                cardTitle: title, 
+                labelName: label_name, 
+                labelColor: color 
+            });
+        }
+    } catch (e) { console.error('Audit Log Error', e); }
+
     return rows[0];
   }
 
-  async removeLabel(cardId, labelId) {
+  async removeLabel(cardId, labelId, userId = 1) {
+    // Get context before delete (label still exists in DB, but we query label table so it's fine)
+    try {
+        const ctxQuery = `
+            SELECT c.title, l.board_id, lb.name as label_name 
+            FROM cards c 
+            JOIN lists l ON c.list_id = l.id 
+            JOIN labels lb ON lb.id = $2 
+            WHERE c.id = $1
+        `;
+        const ctxRes = await db.query(ctxQuery, [cardId, labelId]);
+        if (ctxRes.rows.length > 0) {
+            const { title, board_id, label_name } = ctxRes.rows[0];
+            await auditService.logAction(board_id, userId, 'card', cardId, 'remove_label', { 
+                cardTitle: title, 
+                labelName: label_name 
+            });
+        }
+    } catch (e) { console.error('Audit Log Error', e); }
+
     const query = `DELETE FROM card_labels WHERE card_id = $1 AND label_id = $2`;
     await db.query(query, [cardId, labelId]);
     return { message: 'Label removed' };
   }
 
-  async addMember(cardId, userId) {
+  async addMember(cardId, targetUserId, actionUserId = 1) {
     const query = `
       INSERT INTO card_members (card_id, user_id) VALUES ($1, $2)
       ON CONFLICT DO NOTHING RETURNING *
     `;
-    const { rows } = await db.query(query, [cardId, userId]);
+    const { rows } = await db.query(query, [cardId, targetUserId]);
+    
+    try {
+        const ctxQuery = `
+            SELECT c.title, l.board_id, u.username 
+            FROM cards c 
+            JOIN lists l ON c.list_id = l.id 
+            JOIN users u ON u.id = $2
+            WHERE c.id = $1
+        `;
+        const ctxRes = await db.query(ctxQuery, [cardId, targetUserId]);
+        if (ctxRes.rows.length > 0) {
+            const { title, board_id, username } = ctxRes.rows[0];
+            await auditService.logAction(board_id, actionUserId, 'card', cardId, 'add_member', { 
+                cardTitle: title, 
+                memberName: username 
+            });
+        }
+    } catch (e) { console.error('Audit Log Error', e); }
+
     return rows[0];
   }
 
-  async removeMember(cardId, userId) {
+  async removeMember(cardId, targetUserId, actionUserId = 1) {
+    try {
+        const ctxQuery = `
+             SELECT c.title, l.board_id, u.username 
+             FROM cards c 
+             JOIN lists l ON c.list_id = l.id 
+             JOIN users u ON u.id = $2
+             WHERE c.id = $1
+        `;
+        const ctxRes = await db.query(ctxQuery, [cardId, targetUserId]);
+        if (ctxRes.rows.length > 0) {
+             const { title, board_id, username } = ctxRes.rows[0];
+             await auditService.logAction(board_id, actionUserId, 'card', cardId, 'remove_member', { 
+                 cardTitle: title, 
+                 memberName: username 
+             });
+        }
+    } catch (e) { console.error('Audit Log Error', e); }
+
     const query = `DELETE FROM card_members WHERE card_id = $1 AND user_id = $2`;
-    await db.query(query, [cardId, userId]);
+    await db.query(query, [cardId, targetUserId]);
     return { message: 'Member removed' };
+  }
+
+  async copyCard(cardId, targetListId, userId, title = null) {
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1. Get Original Card
+      const originalQuery = `SELECT * FROM cards WHERE id = $1`;
+      const originalRes = await client.query(originalQuery, [cardId]);
+      if (originalRes.rows.length === 0) throw new Error('Card not found');
+      const original = originalRes.rows[0];
+
+      // 2. Create New Card
+      // Get max position in new list
+      const posQuery = `SELECT MAX(position) as max_pos FROM cards WHERE list_id = $1`;
+      const posRes = await client.query(posQuery, [targetListId]);
+      const newPos = (posRes.rows[0].max_pos || 0) + 65535;
+
+      const insertCard = `
+        INSERT INTO cards (list_id, title, description, position, due_date)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+      `;
+      const values = [targetListId, title || original.title, original.description, newPos, original.due_date];
+      const newCardRes = await client.query(insertCard, values);
+      const newCard = newCardRes.rows[0];
+
+      // 3. Copy Labels
+      const labelsQuery = `INSERT INTO card_labels (card_id, label_id) SELECT $1, label_id FROM card_labels WHERE card_id = $2`;
+      await client.query(labelsQuery, [newCard.id, cardId]);
+
+      // 4. Copy Members
+      const membersQuery = `INSERT INTO card_members (card_id, user_id) SELECT $1, user_id FROM card_members WHERE card_id = $2`;
+      await client.query(membersQuery, [newCard.id, cardId]);
+
+      // 5. Copy Checklists
+      const checkQuery = `SELECT * FROM checklists WHERE card_id = $1`;
+      const checkRes = await client.query(checkQuery, [cardId]);
+      
+      for (const checklist of checkRes.rows) {
+          const insertCheck = `INSERT INTO checklists (card_id, title, position) VALUES ($1, $2, $3) RETURNING id`;
+          const checkInsertRes = await client.query(insertCheck, [newCard.id, checklist.title, checklist.position]);
+          const newCheckId = checkInsertRes.rows[0].id;
+          
+          await client.query(`
+              INSERT INTO checklist_items (checklist_id, content, is_completed, position)
+              SELECT $1, content, is_completed, position FROM checklist_items WHERE checklist_id = $2
+          `, [newCheckId, checklist.id]);
+      }
+
+      await client.query('COMMIT');
+      return newCard;
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 }
 

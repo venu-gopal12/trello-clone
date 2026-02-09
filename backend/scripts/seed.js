@@ -1,5 +1,7 @@
 const db = require('../src/config/db');
 
+const bcrypt = require('bcrypt');
+
 async function seed() {
   try {
     console.log('Seeding database...');
@@ -8,12 +10,13 @@ async function seed() {
     await db.query('TRUNCATE users, boards, lists, cards, labels, checklists, checklist_items, board_members, card_members, card_labels RESTART IDENTITY CASCADE');
 
     // 2. Create Default User
+    const passwordHash = await bcrypt.hash('password123', 10);
     const userQuery = `
-      INSERT INTO users (username, email, avatar_url)
-      VALUES ($1, $2, $3)
+      INSERT INTO users (username, email, password_hash, avatar_url)
+      VALUES ($1, $2, $3, $4)
       RETURNING id;
     `;
-    const userResult = await db.query(userQuery, ['testuser', 'test@example.com', 'https://placehold.co/100x100']);
+    const userResult = await db.query(userQuery, ['testuser', 'test@example.com', passwordHash, 'https://placehold.co/100x100']);
     const userId = userResult.rows[0].id;
     console.log('User created:', userId);
 

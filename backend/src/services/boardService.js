@@ -2,13 +2,13 @@ const db = require('../config/db');
 const auditService = require('./auditService');
 
 class BoardService {
-  async createBoard(title, background_color, owner_id, background_image) {
+  async createBoard(title, background_color, owner_id, background_image, organization_id) {
     const query = `
-      INSERT INTO boards (title, background_color, owner_id, background_image)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO boards (title, background_color, owner_id, background_image, organization_id)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *;
     `;
-    const values = [title, background_color || '#0079bf', owner_id, background_image || null];
+    const values = [title, background_color || '#0079bf', owner_id, background_image || null, organization_id || null];
     const { rows } = await db.query(query, values);
     const newBoard = rows[0];
 
@@ -33,10 +33,16 @@ class BoardService {
     return newBoard;
   }
 
-  async getBoardById(boardId) {
+  async getBoardById(boardId, userId = 1) {
     // 1. Fetch Board
-    const boardQuery = `SELECT * FROM boards WHERE id = $1`;
-    const boardResult = await db.query(boardQuery, [boardId]);
+    const boardQuery = `
+      SELECT b.*,
+        CASE WHEN sb.board_id IS NOT NULL THEN true ELSE false END as is_starred
+      FROM boards b
+      LEFT JOIN starred_boards sb ON b.id = sb.board_id AND sb.user_id = $2
+      WHERE b.id = $1
+    `;
+    const boardResult = await db.query(boardQuery, [boardId, userId]);
     
     if (boardResult.rows.length === 0) {
       return null;
@@ -50,15 +56,10 @@ class BoardService {
     const lists = listsResult.rows;
 
     // 3. Fetch Cards for all lists in this board
-    // Optimization: Fetch all cards for the board in one query instead of N+1
     const listIds = lists.map(list => list.id);
     let cards = [];
     
     if (listIds.length > 0) {
-      // Create placeholders $1, $2, ... for the IN clause
-      // Actually, we can just select by board lists.
-      // Or simpler: SELECT cards.* FROM cards JOIN lists ON cards.list_id = lists.id WHERE lists.board_id = $1
-      
       const cardsQuery = `
         SELECT cards.* 
         FROM cards 
@@ -71,7 +72,6 @@ class BoardService {
     }
 
     // 4. Fetch Meta (Labels & Members)
-    // To avoid N+1, fetch all labels/members for these cards
     if (cards.length > 0) {
         const cardIds = cards.map(c => c.id);
         
@@ -102,7 +102,6 @@ class BoardService {
     }
 
     // 5. Assemble Hierarchy
-    // Map cards to their lists
     const listsWithCards = lists.map(list => ({
       ...list,
       cards: cards.filter(card => card.list_id === list.id)
@@ -120,8 +119,6 @@ class BoardService {
     };
   }
 
-  // Update board (e.g. title, background)
-  // Update board (e.g. title, background)
   async updateBoard(boardId, updates, userId = 1) {
     const { title, background_color, background_image } = updates;
     const fields = [];
@@ -174,11 +171,51 @@ class BoardService {
     return updatedBoard;
   }
 
-  // Helper to fetch all boards for a user (dashboard view)
-  async getAllBoards(userId) {
-    const query = `SELECT * FROM boards WHERE owner_id = $1 ORDER BY created_at DESC`;
-    const { rows } = await db.query(query, [userId]);
+  async getAllBoards(ownerId, organizationId) {
+    let query;
+    let values;
+
+    if (organizationId) {
+       query = `
+         SELECT b.*, 
+           CASE WHEN sb.board_id IS NOT NULL THEN true ELSE false END as is_starred
+         FROM boards b
+         LEFT JOIN starred_boards sb ON b.id = sb.board_id AND sb.user_id = $2
+         WHERE b.organization_id = $1 
+         ORDER BY b.created_at DESC
+       `;
+       values = [organizationId, ownerId];
+    } else {
+       // Personal boards
+       query = `
+         SELECT b.*,
+           CASE WHEN sb.board_id IS NOT NULL THEN true ELSE false END as is_starred
+         FROM boards b
+         LEFT JOIN starred_boards sb ON b.id = sb.board_id AND sb.user_id = $1
+         WHERE b.owner_id = $1 AND b.organization_id IS NULL 
+         ORDER BY b.created_at DESC
+       `;
+       values = [ownerId];
+    }
+    
+    const { rows } = await db.query(query, values);
     return rows;
+  }
+
+  async toggleStar(boardId, userId) {
+    // Check if exists
+    const check = `SELECT * FROM starred_boards WHERE board_id = $1 AND user_id = $2`;
+    const { rows } = await db.query(check, [boardId, userId]);
+
+    if (rows.length > 0) {
+        // Unstar
+        await db.query(`DELETE FROM starred_boards WHERE board_id = $1 AND user_id = $2`, [boardId, userId]);
+        return { is_starred: false };
+    } else {
+        // Star
+        await db.query(`INSERT INTO starred_boards (board_id, user_id) VALUES ($1, $2)`, [boardId, userId]);
+        return { is_starred: true };
+    }
   }
 
   async deleteBoard(boardId) {

@@ -3,12 +3,17 @@ const db = require('../config/db');
 class AuditService {
   async logAction(boardId, userId, entityType, entityId, actionType, details = {}) {
     try {
+      // Fetch organization_id from board
+      const orgQuery = `SELECT organization_id FROM boards WHERE id = $1`;
+      const orgRes = await db.query(orgQuery, [boardId]);
+      const organizationId = orgRes.rows[0]?.organization_id || null;
+
       const query = `
-        INSERT INTO audit_logs (board_id, user_id, entity_type, entity_id, action_type, details)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO audit_logs (board_id, organization_id, user_id, entity_type, entity_id, action_type, details)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *;
       `;
-      const values = [boardId, userId, entityType, entityId, actionType, JSON.stringify(details)];
+      const values = [boardId, organizationId, userId, entityType, entityId, actionType, JSON.stringify(details)];
       await db.query(query, values);
     } catch (error) {
       console.error('Failed to log action:', error);

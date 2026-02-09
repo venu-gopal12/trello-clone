@@ -22,6 +22,9 @@ router.delete('/:id/labels/:labelId', cardController.removeLabel);
 router.post('/:id/members', cardController.addMember);
 router.delete('/:id/members/:userId', cardController.removeMember);
 
+// Copy Card
+router.post('/:id/copy', cardController.copyCard);
+
 // Activity
 router.get('/:id/activity', cardController.getActivity);
 

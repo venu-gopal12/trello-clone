@@ -1,8 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const userController = require('../controllers/userController');
+const auth = require('../middlewares/authMiddleware');
 
-// GET /api/users - Get all users
-router.get('/', userController.getAllUsers);
+router.post('/register', userController.register);
+router.post('/login', userController.login);
+router.post('/refresh-token', userController.refreshToken);
+router.post('/auth/google', userController.googleAuth);
+
+// 🔐 Protected
+router.get('/', auth, userController.getAllUsers);
 
 module.exports = router;

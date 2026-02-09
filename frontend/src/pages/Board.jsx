@@ -1,29 +1,28 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { DragDropContext, Droppable } from '@hello-pangea/dnd';
-import { Star, MoreHorizontal, Loader } from 'lucide-react';
+import { Star, MoreHorizontal, Loader, Plus, Filter, UserPlus } from 'lucide-react';
+import { cn } from '../lib/utils';
 import api from '../services/api';
 import List from '../components/List';
-import CardModal from '../components/CardModal'; // Our new modal
-import SearchBar from '../components/SearchBar'; // Our new top bar
-import Sidebar from '../components/Sidebar';
+import CardModal from '../components/CardModal'; 
+import SearchBar from '../components/SearchBar'; 
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover';
+import { toast } from 'sonner';
 
 const Board = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [board, setBoard] = useState(null);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [boards, setBoards] = useState([]); // For Sidebar
-
+  
   // Search & Filter State
   const [filters, setFilters] = useState({
       keyword: '',
-      labels: [], // Array of label IDs
-      members: [], // Array of member IDs
-      dueDateFilter: null // 'overdue', 'due-soon', etc.
+      labels: [], 
+      members: [], 
+      dueDateFilter: null 
   });
 
   // Modal State
@@ -34,15 +33,17 @@ const Board = () => {
   const [isAddingList, setIsAddingList] = useState(false);
   const [newListTitle, setNewListTitle] = useState('');
 
+  // Data Fetching
+  const [allMembers, setAllMembers] = useState([]);
+
   useEffect(() => {
     fetchBoard();
-    fetchBoards();
+    fetchUsers();
   }, [id]);
 
   const fetchBoard = async () => {
     try {
       const { data } = await api.get(`/boards/${id}`);
-      // Sort lists/cards
       data.lists.sort((a, b) => a.position - b.position);
       data.lists.forEach(list => {
         if (list.cards) list.cards.sort((a, b) => a.position - b.position);
@@ -50,24 +51,10 @@ const Board = () => {
       setBoard(data);
     } catch (error) {
       console.error('Failed to fetch board', error);
-      // Redirect or show error
+      toast.error("Failed to load board");
     }
   };
   
-  const fetchBoards = async () => {
-      try {
-          const { data } = await api.get('/boards');
-          setBoards(data);
-      } catch (error) {
-          console.error('Failed to fetch boards', error);
-      }
-  };
-
-  const [allMembers, setAllMembers] = useState([]);
-  useEffect(() => {
-    fetchUsers();
-  }, []);
-
   const fetchUsers = async () => {
       try {
           const { data } = await api.get('/users');
@@ -80,47 +67,72 @@ const Board = () => {
   // --- Filtering Logic ---
   const filterCards = (cards) => {
       if (!cards) return [];
+      
       return cards.filter(card => {
-          // Keyword (Search)
-          if (filters.keyword && !card.title.toLowerCase().includes(filters.keyword.toLowerCase())) {
-              return false;
-          }
-          // Labels
+          // Keyword
+          if (filters.keyword && !card.title.toLowerCase().includes(filters.keyword.toLowerCase())) return false;
+          
+          // Labels (OR logic)
           if (filters.labels.length > 0) {
-              const cardLabelIds = card.labels?.map(l => l.id) || [];
-              const hasLabel = filters.labels.some(id => cardLabelIds.includes(id));
-              if (!hasLabel) return false;
+              const cardLabelIds = card.labels?.map(l => String(l.id)) || [];
+              const filterLabelIds = filters.labels.map(String);
+              
+              const hasMatch = filterLabelIds.some(id => cardLabelIds.includes(id));
+              if (!hasMatch) return false;
           }
-          // Members
+          
+          // Members (OR logic)
           if (filters.members.length > 0) {
-               const cardMemberIds = card.members?.map(m => m.id) || [];
-              const hasMember = filters.members.some(id => cardMemberIds.includes(id));
-              if (!hasMember) return false;
+               const cardMemberIds = card.members?.map(m => String(m.id)) || [];
+               const filterMemberIds = filters.members.map(String);
+               const hasMatch = filterMemberIds.some(id => cardMemberIds.includes(id));
+               if (!hasMatch) return false;
           }
+          
           // Due Date
           if (filters.dueDateFilter) {
                if (filters.dueDateFilter === 'no-due-date') {
+                   // If filter is 'no-due-date', show only cards WITHOUT due date
                    if (card.due_date) return false;
                } else {
+                   // For other filters, card MUST have a due date
                    if (!card.due_date) return false;
+                   
                    const due = new Date(card.due_date);
                    const now = new Date();
-                   const diffDays = (due - now) / (1000 * 60 * 60 * 24);
+                   // Calculate difference in days (ignoring time mostly, but simple diff is fine)
+                   const diffTime = due - now;
+                   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
 
-                   if (filters.dueDateFilter === 'overdue' && due >= now) return false;
-                   if (filters.dueDateFilter === 'due-soon' && (diffDays < 0 || diffDays > 3)) return false;
+                   if (filters.dueDateFilter === 'overdue' && due >= now) return false; // Hide if not overdue
+                   if (filters.dueDateFilter === 'due-soon' && (diffDays < 0 || diffDays > 3)) return false; 
                    if (filters.dueDateFilter === 'due-later' && diffDays <= 3) return false;
                }
           }
           return true;
       });
   };
+
+  const handleBoardDelete = async (boardId) => {
+      if (window.confirm('Are you sure you want to delete this board? ALL DATA WILL BE LOST.')) { // Restore confirm as safety
+          try {
+              console.log('Deleting board:', boardId);
+              await api.delete(`/boards/${boardId}`);
+              toast.success('Board deleted successfully');
+              console.log('Board deleted, navigating...');
+              navigate('/');
+          } catch (error) { 
+              console.error('Failed to delete board', error); 
+              toast.error('Failed to delete board');
+          }
+      }
+  };
   
   // --- Drag and Drop ---
   const onDragEnd = async (result) => {
-    const { destination, source, draggableId, type } = result;
+      const { destination, source, draggableId, type } = result;
 
-    if (!destination) return;
+      if (!destination) return;
     if (destination.droppableId === source.droppableId && destination.index === source.index) return;
 
     if (type === 'list') {
@@ -129,7 +141,6 @@ const Board = () => {
        newLists.splice(destination.index, 0, movedList);
        setBoard({ ...board, lists: newLists });
        
-       // Calc Position
        const prev = newLists[destination.index - 1];
        const next = newLists[destination.index + 1];
        const posPrev = prev ? prev.position : 0;
@@ -140,6 +151,7 @@ const Board = () => {
            await api.put(`/lists/${draggableId}`, { position: newPos });
        } catch (e) {
            console.error("Move list failed", e);
+           toast.error("Failed to save list position");
        }
        return;
     }
@@ -160,12 +172,15 @@ const Board = () => {
         const prev = newCards[destination.index - 1];
         const next = newCards[destination.index + 1];
         const posPrev = prev ? prev.position : 0;
-        const posNext = next ? next.position : (prev ? prev.position + 10000 : 200000); // simplified fallback
+        const posNext = next ? next.position : (prev ? prev.position + 10000 : 200000);
         const newPos = (posPrev + posNext) / 2;
 
         try {
             await api.put(`/cards/${draggableId}`, { position: newPos, list_id: sourceList.id });
-        } catch (e) { console.error("Move card failed", e); }
+        } catch (e) { 
+            console.error("Move card failed", e);
+            toast.error("Failed to save card position");
+        }
     } else {
         const sourceCards = Array.from(sourceList.cards);
         const [movedCard] = sourceCards.splice(source.index, 1);
@@ -187,7 +202,10 @@ const Board = () => {
         
          try {
             await api.put(`/cards/${draggableId}`, { position: newPos, list_id: destList.id });
-        } catch (e) { console.error("Move card failed", e); }
+        } catch (e) { 
+            console.error("Move card failed", e);
+            toast.error("Failed to save card position");
+        }
     }
   };
 
@@ -197,157 +215,109 @@ const Board = () => {
       const titleToUse = newListTitle;
       const tempId = `temp-list-${Date.now()}`;
       
-      const tempList = {
-          id: tempId,
-          board_id: parseInt(id),
-          title: titleToUse,
-          position: (board.lists.length + 1) * 65535, // rough estimate
-          cards: []
-      };
+      const tempList = { id: tempId, board_id: parseInt(id), title: titleToUse, position: (board.lists.length + 1) * 65535, cards: [] };
 
       setNewListTitle('');
       setIsAddingList(false);
-
-      // Optimistic Add
-      setBoard(prev => ({
-          ...prev,
-          lists: [...prev.lists, tempList]
-      }));
+      
+      setBoard(prev => ({ ...prev, lists: [...prev.lists, tempList] }));
 
       try {
           const { data: newList } = await api.post('/lists', { board_id: id, title: titleToUse });
-          
-          // Replace temp list with real list
           setBoard(prev => ({
               ...prev,
               lists: prev.lists.map(l => l.id === tempId ? { ...newList, cards: [] } : l)
           }));
+          toast.success("List created");
       } catch (e) { 
           console.error(e);
-          setBoard(prev => ({
-              ...prev,
-              lists: prev.lists.filter(l => l.id !== tempId)
-          }));
+          toast.error("Failed to create list");
+          setBoard(prev => ({ ...prev, lists: prev.lists.filter(l => l.id !== tempId) }));
       }
   };
   
   const handleListDelete = async (listId) => {
       if (confirm("Delete list?")) {
-        // Optimistic Delete
         const originalLists = board.lists;
-        setBoard(prev => ({
-            ...prev,
-            lists: prev.lists.filter(l => l.id !== listId)
-        }));
-
-        try {
-            await api.delete(`/lists/${listId}`);
-            // No fetchBoard needed
-        } catch (e) { 
+        setBoard(prev => ({ ...prev, lists: prev.lists.filter(l => l.id !== listId) }));
+        try { 
+            await api.delete(`/lists/${listId}`); 
+            toast.success("List deleted");
+        } 
+        catch (e) { 
             console.error(e);
-            // Revert on error
+            toast.error("Failed to delete list");
             setBoard(prev => ({ ...prev, lists: originalLists }));
-            alert("Failed to delete list");
         }
+      }
+  };
+
+  const handleListUpdate = async (listId, title) => {
+      setBoard(prev => ({
+          ...prev,
+          lists: prev.lists.map(l => l.id === listId ? { ...l, title } : l)
+      }));
+      try {
+          await api.put(`/lists/${listId}`, { title });
+      } catch (e) {
+          console.error("Failed to update list", e);
+          toast.error("Failed to update list title");
       }
   };
 
   const handleCardAdd = async (listId, title) => {
       const tempId = `temp-${Date.now()}`;
-      const tempCard = {
-          id: tempId,
-          list_id: listId,
-          title,
-          position: 65535,
-          labels: [],
-          members: []
-      };
+      const tempCard = { id: tempId, list_id: listId, title, position: 65535, labels: [], members: [] };
 
-      // Optimistic Add
       setBoard(prev => ({
           ...prev,
-          lists: prev.lists.map(list => 
-              list.id === listId 
-                ? { ...list, cards: [...list.cards, tempCard] }
-                : list
-          )
+          lists: prev.lists.map(list => list.id === listId ? { ...list, cards: [...list.cards, tempCard] } : list)
       }));
 
       try {
           const { data: newCard } = await api.post('/cards', { list_id: listId, title, position: 65535 });
-          
-          // Replace temp card with real card
           setBoard(prev => ({
               ...prev,
-              lists: prev.lists.map(list => 
-                  list.id === listId 
-                    ? { ...list, cards: list.cards.map(c => c.id === tempId ? newCard : c) }
-                    : list
-              )
+              lists: prev.lists.map(list => list.id === listId ? { ...list, cards: list.cards.map(c => c.id === tempId ? newCard : c) } : list)
           }));
+          // toast.success("Card created"); // Optional: Creation is fast/visible, maybe no toast needed? User said "toast also", I'll skip simple create to avoid spam, or add it? I'll skip create toast for now as it's very frequent.
       } catch (e) { 
           console.error(e);
-          // Rollback on error
+          toast.error("Failed to create card");
           setBoard(prev => ({
             ...prev,
-            lists: prev.lists.map(list => 
-                list.id === listId 
-                  ? { ...list, cards: list.cards.filter(c => c.id !== tempId) }
-                  : list
-            )
+            lists: prev.lists.map(list => list.id === listId ? { ...list, cards: list.cards.filter(c => c.id !== tempId) } : list)
         }));
       }
   };
   
   const handleCardDelete = async (cardId) => {
-      if (confirm("Delete card?")) {
-          // Optimistic Delete
-          const originalLists = board.lists;
-          setBoard(prev => ({
-              ...prev,
-              lists: prev.lists.map(list => ({
-                  ...list,
-                  cards: list.cards.filter(c => c.id !== cardId)
-              }))
-          }));
-          setSelectedCardId(null);
+      // Optimistically remove from UI
+      const originalLists = board.lists;
+      setBoard(prev => ({
+          ...prev,
+          lists: prev.lists.map(list => ({ ...list, cards: list.cards.filter(c => c.id !== cardId) }))
+      }));
+      setSelectedCardId(null);
 
-          try {
-              await api.delete(`/cards/${cardId}`);
-              // No fetchBoard needed
-          } catch(e) { 
-              console.error(e);
-              // Revert
-              setBoard(prev => ({ ...prev, lists: originalLists }));
-              alert("Failed to delete card");
-          }
+      // If it's a temporary card (not yet saved to DB), don't call API
+      if (String(cardId).startsWith('temp-')) {
+          console.log("Deleted temporary card locally:", cardId);
+          return;
+      }
+
+      try { 
+          await api.delete(`/cards/${cardId}`); 
+          toast.success("Card deleted");
+      } 
+      catch(e) { 
+          console.error("Delete failed", e);
+          setBoard(prev => ({ ...prev, lists: originalLists }));
+          toast.error("Failed to delete card");
       }
   };
 
-  const handleCreateBoard = async (newBoard) => {
-      try {
-        const payload = { 
-            title: newBoard.title, 
-        };
-        // Fix: Backend has varchar(20) limit for color, but TEXT for image.
-        // Send gradients as background_image strings.
-        if (newBoard.background && newBoard.background.includes('gradient')) {
-             payload.background_image = newBoard.background;
-             payload.background_color = '#0079bf'; // Default fallback
-        } else {
-             payload.background_color = newBoard.background || '#0079bf';
-        }
-
-        const { data } = await api.post('/boards', payload);
-        navigate(`/board/${data.id}`);
-      } catch(e) { 
-          console.error("Create board failed", e); 
-          alert("Failed to create board. Please try again.");
-      }
-  };
-  
   const handleCardUpdate = async (updatedCard) => {
-      // 1. Optimistic Update (Immediate UI Change)
       setBoard(prev => {
           const newLists = prev.lists.map(list => ({
               ...list,
@@ -355,106 +325,38 @@ const Board = () => {
           }));
           return { ...prev, lists: newLists };
       });
-
       try {
-          // 2. Persist Basic Updates
           const payload = {
               title: updatedCard.title,
               description: updatedCard.description,
               due_date: updatedCard.dueDate || updatedCard.due_date,
           };
-          // Don't await strictly for UI purposes, but we need order for data integrity?
-          // For now, allow background.
           api.put(`/cards/${updatedCard.id}`, payload);
-
-          // 3. Member Updates (Diffing)
-          const originalCard = board.lists
-            .flatMap(l => l.cards)
-            .find(c => c.id === updatedCard.id);
-
-          if (originalCard && updatedCard.members) {
-              const oldMemberIds = originalCard.members.map(m => m.id);
-              // CardModal uses IDs internally but might pass full objects if not careful.
-              // We normalized to IDs in CardModal state, let's assume incoming is correct OR handle both.
-              const validNewMemberIds = updatedCard.members.map(m => typeof m === 'object' ? m.id : m);
-
-              const toAdd = validNewMemberIds.filter(id => !oldMemberIds.includes(id));
-              const toRemove = oldMemberIds.filter(id => !validNewMemberIds.includes(id));
-
-              // Parallelize these requests
-              const memberPromises = [
-                  ...toAdd.map(id => api.post(`/cards/${updatedCard.id}/members`, { user_id: id })),
-                  ...toRemove.map(id => api.delete(`/cards/${updatedCard.id}/members/${id}`))
-              ];
-              Promise.all(memberPromises).catch(e => console.error("Member sync error", e));
-          }
-
-          // 4. Label Updates (Diffing)
-          if (originalCard && updatedCard.labels) {
-              const oldLabelIds = originalCard.labels.map(l => l.id);
-              const validNewLabelIds = updatedCard.labels.map(l => typeof l === 'object' ? l.id : l);
-
-              const toAddLabels = validNewLabelIds.filter(id => !oldLabelIds.includes(id));
-              const toRemoveLabels = oldLabelIds.filter(id => !validNewLabelIds.includes(id));
-
-               const labelPromises = [
-                  ...toAddLabels.map(id => api.post(`/cards/${updatedCard.id}/labels`, { label_id: id })),
-                  ...toRemoveLabels.map(id => api.delete(`/cards/${updatedCard.id}/labels/${id}`))
-              ];
-              Promise.all(labelPromises).catch(e => console.error("Label sync error", e));
-          }
-          
-          // No fetchBoard() needed!
       } catch(e) { 
           console.error("Card update failed", e);
-          // Revert state if critical failure? For now just log.
+          toast.error("Failed to update card");
       }
   };
   
-  const handleBoardDelete = async (boardId) => {
-      if (confirm('Are you sure you want to delete this board? This action cannot be undone.')) {
-          try {
-              await api.delete(`/boards/${boardId}`);
-              navigate('/'); // Return to dashboard/home
-          } catch (error) {
-              console.error('Failed to delete board', error);
-              alert('Failed to delete board.');
-          }
-      }
+  const handleStarToggle = async () => {
+    try {
+        setBoard(prev => ({ ...prev, is_starred: !prev.is_starred }));
+        await api.post(`/boards/${board.id}/star`);
+    } catch (e) {
+        console.error("Failed to toggle star", e);
+        setBoard(prev => ({ ...prev, is_starred: !prev.is_starred }));
+        toast.error("Failed to update board");
+    }
   };
 
-  if (!board) return <div className="flex h-screen items-center justify-center"><Loader className="animate-spin" /></div>;
+  if (!board) return <div className="flex h-full items-center justify-center bg-slate-50"><Loader className="animate-spin text-indigo-600 h-8 w-8" /></div>;
 
   const selectedCard = selectedCardId 
     ? board.lists.flatMap(l => l.cards).find(c => c.id === selectedCardId) 
     : null;
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      {/* Sidebar - Fixed or Flex? User code was flex-col h-screen for board, Sidebar fixed. Pattern: Side rail + Content */}
-      <Sidebar 
-        boards={boards} 
-        activeBoard={board} 
-        onSelectBoard={(boardId) => navigate(`/board/${boardId}`)}
-        onCreateBoard={handleCreateBoard}
-        isOpen={isSidebarOpen}
-        toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
-      />
-
-      {/* Main Content Area - Shifted by Sidebar Width */}
-      <div 
-        className={`flex-1 flex flex-col h-screen transition-all duration-300 ${isSidebarOpen ? 'ml-64' : 'ml-0'}`}
-      >
-        {/* Top/Search Bar */}
-        <SearchBar 
-            searchQuery={filters.keyword}
-            onSearchChange={(q) => setFilters({...filters, keyword: q})}
-            filters={filters}
-            onFilterChange={setFilters}
-            labels={board.labels || []}
-            members={allMembers}
-        />
-
+    <div className="flex flex-col h-full bg-slate-50">
         {/* Board Canvas */}
         <div 
             className="flex-1 flex flex-col relative overflow-hidden"
@@ -467,42 +369,69 @@ const Board = () => {
                 backgroundPosition: 'center'
             }}
         >
-             {/* Board Header (White text on board bg) */}
-             <div className="flex items-center justify-between px-4 py-3 text-white bg-black/10 backdrop-blur-sm shadow-sm">
-                <div className="flex items-center gap-3">
-                  <h1 className="text-xl font-bold drop-shadow-md">{board.title}</h1>
-                <Button variant="ghost" size="icon" className="text-white hover:bg-white/20">
-                  <Star className={`h-5 w-5`} />
-                </Button>
-              </div>
-              
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="ghost" size="icon" className="text-white hover:bg-white/20">
-                    <MoreHorizontal className="h-5 w-5" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-48 bg-white text-gray-800 border-gray-200">
-                    <div className="space-y-1">
-                        <h4 className="font-semibold text-sm px-2 py-1.5 border-b mb-1">Board Menu</h4>
-                        <Button 
-                            variant="ghost" 
-                            className="w-full justify-start text-red-600 hover:bg-red-50 hover:text-red-700"
-                            onClick={() => handleBoardDelete(board.id)}
-                        >
-                            Delete Board
-                        </Button>
-                    </div>
-                </PopoverContent>
-              </Popover>
-            </div>
+             {/* Dark overlay for text readability as requested */}
+             <div className="absolute inset-0 bg-black/40" />
+             
+             {/* Board Navbar (Transparent Glass) */}
+             <div className="relative z-40 flex items-center justify-between px-6 py-3 text-white bg-black/20 backdrop-blur-md border-b border-white/10 shadow-sm transition-all">
+                 <div className="flex items-center gap-4">
+                     <h1 className="text-xl font-bold rounded-md px-3 py-1 hover:bg-white/20 cursor-pointer transition-colors backdrop-blur-sm tracking-tight shadow-sm border border-transparent hover:border-white/20">
+                         {board.title}
+                     </h1>
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        onClick={handleStarToggle}
+                        className={cn(
+                            "h-9 w-9 hover:bg-white/20 transition-all rounded-md",
+                            board.is_starred ? "text-yellow-400 hover:text-yellow-300" : "text-white/80 hover:text-white"
+                        )}
+                      >
+                        <Star className={cn("h-5 w-5", board.is_starred && "fill-current")} />
+                      </Button>
+                     <div className="h-6 w-[1px] bg-white/20"></div>
+                     {/* Team members stack */}
+                     <div className="flex -space-x-2 hover:space-x-0 transition-all duration-300">
+                         {allMembers.slice(0, 3).map(u => (
+                             <div key={u.id} className="h-8 w-8 rounded-full bg-slate-100 border-2 border-transparent hover:border-white/50 hover:z-50 hover:scale-110 flex items-center justify-center text-xs font-bold text-slate-800 shadow-sm transition-all cursor-pointer" title={u.username}>
+                                 {u.avatar_url ? <img src={u.avatar_url} className="h-full w-full object-cover rounded-full" /> : u.username?.[0]}
+                             </div>
+                         ))}
+                         <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full bg-white/20 text-white hover:bg-white/30 ml-2 border border-white/10 hover:border-white/30 backdrop-blur-sm shadow-sm transition-all">
+                             <UserPlus className="h-4 w-4" />
+                         </Button>
+                     </div>
+                 </div>
+
+                 <div className="flex items-center gap-3">
+                     <div className="bg-black/20 backdrop-blur-sm rounded-md p-0.5 border border-white/10 shadow-inner">
+                        <SearchBar 
+                            searchQuery={filters.keyword}
+                            onSearchChange={(q) => setFilters({...filters, keyword: q})}
+                            filters={filters}
+                            onFilterChange={setFilters}
+                            labels={board.labels || []}
+                            members={allMembers}
+                            compact={true} 
+                        />
+                     </div>
+                     <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        onClick={() => handleBoardDelete(board.id)}
+                        className="text-white/70 hover:text-red-200 hover:bg-red-500/20 font-medium px-3 h-9 rounded-md transition-colors"
+                     >
+                        Delete Board
+                     </Button>
+                 </div>
+             </div>
 
             {/* Drag Drop Context */}
             <DragDropContext onDragEnd={onDragEnd}>
                  <Droppable droppableId="all-lists" direction="horizontal" type="list">
                     {(provided) => (
                         <div 
-                             className="flex-1 overflow-x-auto overflow-y-hidden p-4 flex gap-4 items-start"
+                             className="flex-1 overflow-x-auto overflow-y-hidden p-6 flex gap-6 items-start z-10"
                              ref={provided.innerRef}
                              {...provided.droppableProps}
                         >
@@ -514,8 +443,9 @@ const Board = () => {
                                     onCardClick={(cid, lTitle) => { setSelectedCardId(cid); setSelectedListTitle(lTitle); }}
                                     onCardAdd={handleCardAdd}
                                     onListDelete={handleListDelete}
+                                    onListUpdate={handleListUpdate}
                                     onCardDelete={handleCardDelete}
-                                    isDragDisabled={false} // filter logic handled in map
+                                    isDragDisabled={false} 
                                     labels={board.labels || []}
                                     members={allMembers}
                                 />
@@ -525,26 +455,29 @@ const Board = () => {
                             {/* Add List Button */}
                             <div className="flex-shrink-0 w-72">
                                 {isAddingList ? (
-                                    <div className="bg-white rounded-lg p-3 shadow-sm border border-gray-200">
+                                    <div className="bg-[#f1f2f4] rounded-xl p-2 shadow-sm animate-in fade-in zoom-in-95 duration-200">
                                         <Input 
                                             autoFocus
                                             value={newListTitle}
                                             onChange={(e) => setNewListTitle(e.target.value)}
                                             onKeyDown={(e) => e.key === 'Enter' && handleAddList()}
                                             placeholder="Enter list title..."
-                                            className="mb-2"
+                                            className="mb-2 h-9 border-blue-600 rounded-[3px] focus:ring-0"
                                         />
-                                        <div className="flex gap-2">
-                                            <Button onClick={handleAddList} size="sm">Add List</Button>
-                                            <Button onClick={() => setIsAddingList(false)} variant="ghost" size="sm">Cancel</Button>
+                                        <div className="flex gap-1">
+                                            <Button onClick={handleAddList} size="sm" className="bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-8">Add list</Button>
+                                            <Button onClick={() => setIsAddingList(false)} variant="ghost" size="sm" className="text-slate-500 h-8 hover:bg-slate-300/50">
+                                                <MoreHorizontal className="h-6 w-6" />
+                                            </Button>
                                         </div>
                                     </div>
                                 ) : (
                                     <Button 
                                         onClick={() => setIsAddingList(true)}
-                                        className="w-full justify-start bg-white/20 hover:bg-white/30 text-white font-medium backdrop-blur-sm"
+                                        className="w-full justify-start h-12 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white font-semibold shadow-sm border-none transition-all"
                                     >
-                                        + Add another list
+                                        <Plus className="h-5 w-5 mr-2" />
+                                        Add another list
                                     </Button>
                                 )}
                             </div>
@@ -553,7 +486,6 @@ const Board = () => {
                  </Droppable>
             </DragDropContext>
         </div>
-      </div>
 
       {/* Card Modal */}
       {selectedCard && (
@@ -563,6 +495,8 @@ const Board = () => {
              members={allMembers}
              onClose={() => setSelectedCardId(null)}
              onUpdate={handleCardUpdate}
+             onDelete={handleCardDelete}
+             onRefresh={fetchBoard}
           />
       )}
     </div>

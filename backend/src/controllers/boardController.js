@@ -3,7 +3,7 @@ const boardService = require('../services/boardService');
 class BoardController {
   async createBoard(req, res) {
     try {
-      const { title, background_color, owner_id, background_image } = req.body;
+      const { title, background_color, owner_id, background_image, organization_id } = req.body;
       
       // Basic validation
       if (!title) {
@@ -12,9 +12,9 @@ class BoardController {
       
       // Default owner_id if not provided (for "No Auth" requirement)
       // In a real app, this comes from req.user.id
-      const finalOwnerId = owner_id || 1; 
+      const finalOwnerId = req.user ? req.user.id : (owner_id || 1); 
 
-      const newBoard = await boardService.createBoard(title, background_color, finalOwnerId, background_image);
+      const newBoard = await boardService.createBoard(title, background_color, finalOwnerId, background_image, organization_id);
       res.status(201).json(newBoard);
     } catch (error) {
       console.error('Error creating board:', error);
@@ -25,7 +25,8 @@ class BoardController {
   async getBoard(req, res) {
     try {
       const { id } = req.params;
-      const board = await boardService.getBoardById(id);
+      const userId = req.user ? req.user.id : 1;
+      const board = await boardService.getBoardById(id, userId);
 
       if (!board) {
         return res.status(404).json({ error: 'Board not found' });
@@ -40,8 +41,10 @@ class BoardController {
 
   async getBoards(req, res) {
     try {
-      const ownerId = req.query.owner_id || 1; // Default user
-      const boards = await boardService.getAllBoards(ownerId);
+      const ownerId = req.user ? req.user.id : (req.query.owner_id || 1); // Default user
+      const organizationId = req.query.organization_id;
+      
+      const boards = await boardService.getAllBoards(ownerId, organizationId);
       res.json(boards);
     } catch (error) {
       console.error('Error fetching boards:', error);
@@ -69,13 +72,14 @@ class BoardController {
   async deleteBoard(req, res) {
     try {
       const { id } = req.params;
+      console.log('Controller Deleting board:', id);
       const deletedBoard = await boardService.deleteBoard(id);
-
       if (!deletedBoard) {
-        return res.status(404).json({ error: 'Board not found' });
+          console.log('Board not found/not deleted:', id);
+          return res.status(404).json({ error: 'Board not found' });
       }
-
-      res.status(200).json({ message: 'Board deleted successfully', id });
+      console.log('Board deleted successfully:', id);
+      res.json({ message: 'Board deleted successfully', board: deletedBoard });
     } catch (error) {
       console.error('Error deleting board:', error);
       res.status(500).json({ error: 'Internal Server Error' });
@@ -92,6 +96,17 @@ class BoardController {
     } catch (error) {
       console.error('Error fetching activity:', error);
       res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+  async toggleStar(req, res) {
+    try {
+        const { id } = req.params;
+        const userId = req.user ? req.user.id : 1;
+        const result = await boardService.toggleStar(id, userId);
+        res.json(result);
+    } catch (e) {
+        console.error('Error toggling star:', e);
+        res.status(500).json({ error: 'Internal Server Error' });
     }
   }
 }

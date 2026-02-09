@@ -39,6 +39,9 @@ class CardController {
   async deleteCard(req, res) {
     try {
       const { id } = req.params;
+      if (isNaN(id)) {
+          return res.status(400).json({ error: 'Invalid ID format' });
+      }
       const userId = 1;
       const deletedCard = await cardService.deleteCard(id, userId);
       
@@ -101,6 +104,19 @@ class CardController {
     } catch (error) {
       console.error('Error fetching card activity:', error);
       res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+  async copyCard(req, res) {
+    try {
+      const { id } = req.params; // source card id
+      const { list_id, title } = req.body; // target list
+      const userId = req.user ? req.user.id : 1; 
+
+      const newCard = await cardService.copyCard(id, list_id, userId, title);
+      res.status(201).json(newCard);
+    } catch (e) {
+      console.error('Error copying card:', e);
+      res.status(500).json({ error: e.message });
     }
   }
 }
